@@ -10,12 +10,24 @@ const COLORS = {
 const SPHERE = {
   maxRadius: 100,
   minRadius: 10,
-  speed: 0.5,
-  count: 20,
+  speed: 0.25,
+  count: 50,
+} as const
+
+const SIMULATION = {
+  referenceFramesPerSecond: 60,
+  maxDeltaTimeSeconds: 0.1,
 } as const
 
 const LAYOUT = {
   canvasPadding: 48,
+} as const
+
+const PHYSICS = {
+  minCollisionTime: 1e-6,
+  gapAfterContact: 1e-4,
+  maxOverlapFixAttempts: 4,
+  maxCollisionChecksPerFrame: 16,
 } as const
 
 // --- Types ---
@@ -28,6 +40,7 @@ type SphereConfig = {
   radius: number
   strokeColor: string
   velocity: Vec2
+  speed: number
 }
 
 type CircleBounds = { x: number; y: number; radius: number }
@@ -123,43 +136,429 @@ class CanvasRenderer {
 
 // --- Physics ---
 
+function dotProduct(a: Vec2, b: Vec2) {
+  return a.x * b.x + a.y * b.y
+}
+
+function centerDistance(sphereA: Sphere, sphereB: Sphere) {
+  return Math.hypot(sphereB.x - sphereA.x, sphereB.y - sphereA.y)
+}
+
+function touchDistance(sphereA: Sphere, sphereB: Sphere) {
+  return sphereA.radius + sphereB.radius
+}
+
 function areCirclesOverlapping(a: CircleBounds, b: CircleBounds) {
-  return (
-    (a.x - b.x) ** 2 + (a.y - b.y) ** 2 <= (a.radius + b.radius) ** 2
+  const distance = Math.hypot(b.x - a.x, b.y - a.y)
+  return distance <= a.radius + b.radius
+}
+
+function areSpheresOverlapping(sphereA: Sphere, sphereB: Sphere) {
+  return areCirclesOverlapping(sphereA, sphereB)
+}
+
+function unitDirectionFromAToB(sphereA: Sphere, sphereB: Sphere): Vec2 {
+  const distance = centerDistance(sphereA, sphereB)
+
+  if (distance < 1e-10) {
+    return { x: 1, y: 0 }
+  }
+
+  return {
+    x: (sphereB.x - sphereA.x) / distance,
+    y: (sphereB.y - sphereA.y) / distance,
+  }
+}
+
+function areMovingTowardEachOther(
+  sphereA: Sphere,
+  sphereB: Sphere,
+  directionFromAToB: Vec2,
+) {
+  const speedDifference = {
+    x: sphereA.velocity.x - sphereB.velocity.x,
+    y: sphereA.velocity.y - sphereB.velocity.y,
+  }
+
+  return dotProduct(speedDifference, directionFromAToB) > 0
+}
+
+function bounceVelocity(velocity: Vec2, surfaceNormal: Vec2): Vec2 {
+  const speedAlongNormal = dotProduct(velocity, surfaceNormal)
+
+  return {
+    x: velocity.x - 2 * speedAlongNormal * surfaceNormal.x,
+    y: velocity.y - 2 * speedAlongNormal * surfaceNormal.y,
+  }
+}
+
+function normalizeSphereSpeed(sphere: Sphere) {
+  const currentSpeed = Math.hypot(sphere.velocity.x, sphere.velocity.y)
+
+  if (currentSpeed < 1e-10) {
+    sphere.velocity = { x: sphere.speed, y: 0 }
+    return
+  }
+
+  const scale = sphere.speed / currentSpeed
+  sphere.velocity.x *= scale
+  sphere.velocity.y *= scale
+}
+
+function pickEarliestTime(times: number[], withinTime: number) {
+  let earliest: number | null = null
+
+  for (const time of times) {
+    if (
+      time > PHYSICS.minCollisionTime &&
+      time <= withinTime &&
+      (earliest === null || time < earliest)
+    ) {
+      earliest = time
+    }
+  }
+
+  return earliest
+}
+
+function solveEarliestTouchTime(
+  centerOffsetX: number,
+  centerOffsetY: number,
+  speedDifferenceX: number,
+  speedDifferenceY: number,
+  touchRadius: number,
+  withinTime: number,
+): number | null {
+  const currentDistanceSquared =
+    centerOffsetX * centerOffsetX + centerOffsetY * centerOffsetY
+
+  if (currentDistanceSquared <= touchRadius * touchRadius) {
+    return null
+  }
+
+  const speedDifferenceSquared =
+    speedDifferenceX * speedDifferenceX + speedDifferenceY * speedDifferenceY
+  if (speedDifferenceSquared < 1e-10) return null
+
+  const distanceChangeRate =
+    2 *
+    (centerOffsetX * speedDifferenceX + centerOffsetY * speedDifferenceY)
+  const distanceGapSquared = currentDistanceSquared - touchRadius * touchRadius
+  const discriminant =
+    distanceChangeRate * distanceChangeRate -
+    4 * speedDifferenceSquared * distanceGapSquared
+
+  if (discriminant < 0) return null
+
+  const sqrtDiscriminant = Math.sqrt(discriminant)
+  const denominator = 2 * speedDifferenceSquared
+
+  return pickEarliestTime(
+    [
+      (-distanceChangeRate - sqrtDiscriminant) / denominator,
+      (-distanceChangeRate + sqrtDiscriminant) / denominator,
+    ],
+    withinTime,
   )
 }
 
-function resolveSphereCollision(sphereA: Sphere, sphereB: Sphere) {
-  const deltaX = sphereB.x - sphereA.x
-  const deltaY = sphereB.y - sphereA.y
-  const distance = Math.hypot(deltaX, deltaY)
-  if (distance >= sphereA.radius + sphereB.radius) return
+function timeUntilSpheresTouch(
+  sphereA: Sphere,
+  sphereB: Sphere,
+  withinTime: number,
+): number | null {
+  return solveEarliestTouchTime(
+    sphereB.x - sphereA.x,
+    sphereB.y - sphereA.y,
+    sphereB.velocity.x - sphereA.velocity.x,
+    sphereB.velocity.y - sphereA.velocity.y,
+    touchDistance(sphereA, sphereB),
+    withinTime,
+  )
+}
 
-  const normalX = deltaX / distance
-  const normalY = deltaY / distance
-  const relativeVelocityX = sphereA.velocity.x - sphereB.velocity.x
-  const relativeVelocityY = sphereA.velocity.y - sphereB.velocity.y
-  const velocityAlongNormal =
-    relativeVelocityX * normalX + relativeVelocityY * normalY
-  if (velocityAlongNormal > 0) return
+function isSphereOutsideCanvas(sphere: Sphere, viewport: Viewport) {
+  const { width, height } = viewport
 
-  const impulse = -velocityAlongNormal
-  const impulseX = impulse * normalX
-  const impulseY = impulse * normalY
+  return (
+    sphere.x - sphere.radius < 0 ||
+    sphere.x + sphere.radius > width ||
+    sphere.y - sphere.radius < 0 ||
+    sphere.y + sphere.radius > height
+  )
+}
 
-  sphereA.velocity.x += impulseX
-  sphereA.velocity.y += impulseY
-  sphereB.velocity.x -= impulseX
-  sphereB.velocity.y -= impulseY
+function pickEarliestWallHitTime(
+  candidateTimes: Array<number | null>,
+  withinTime: number,
+) {
+  let earliest: number | null = null
 
-  const overlap = sphereA.radius + sphereB.radius - distance
-  const separationX = (overlap / 2) * normalX
-  const separationY = (overlap / 2) * normalY
+  for (const time of candidateTimes) {
+    if (
+      time !== null &&
+      time > 0 &&
+      time <= withinTime &&
+      (earliest === null || time < earliest)
+    ) {
+      earliest = time
+    }
+  }
 
-  sphereA.x -= separationX
-  sphereA.y -= separationY
-  sphereB.x += separationX
-  sphereB.y += separationY
+  return earliest
+}
+
+function timeUntilSphereHitsLeftWall(sphere: Sphere) {
+  if (sphere.velocity.x >= 0) return null
+  return (sphere.radius - sphere.x) / sphere.velocity.x
+}
+
+function timeUntilSphereHitsRightWall(sphere: Sphere, canvasWidth: number) {
+  if (sphere.velocity.x <= 0) return null
+  return (canvasWidth - sphere.radius - sphere.x) / sphere.velocity.x
+}
+
+function timeUntilSphereHitsTopWall(sphere: Sphere) {
+  if (sphere.velocity.y >= 0) return null
+  return (sphere.radius - sphere.y) / sphere.velocity.y
+}
+
+function timeUntilSphereHitsBottomWall(sphere: Sphere, canvasHeight: number) {
+  if (sphere.velocity.y <= 0) return null
+  return (canvasHeight - sphere.radius - sphere.y) / sphere.velocity.y
+}
+
+function timeUntilSphereHitsWall(
+  sphere: Sphere,
+  viewport: Viewport,
+  withinTime: number,
+): number | null {
+  if (isSphereOutsideCanvas(sphere, viewport)) {
+    return null
+  }
+
+  const { width, height } = viewport
+
+  return pickEarliestWallHitTime(
+    [
+      timeUntilSphereHitsLeftWall(sphere),
+      timeUntilSphereHitsRightWall(sphere, width),
+      timeUntilSphereHitsTopWall(sphere),
+      timeUntilSphereHitsBottomWall(sphere, height),
+    ],
+    withinTime,
+  )
+}
+
+function pushSpheresApart(sphereA: Sphere, sphereB: Sphere, directionFromAToB: Vec2) {
+  const distance = centerDistance(sphereA, sphereB)
+  const desiredDistance = touchDistance(sphereA, sphereB) + PHYSICS.gapAfterContact
+
+  if (distance >= desiredDistance) return
+
+  const overlap = desiredDistance - distance
+  const pushX = (overlap / 2) * directionFromAToB.x
+  const pushY = (overlap / 2) * directionFromAToB.y
+
+  sphereA.x -= pushX
+  sphereA.y -= pushY
+  sphereB.x += pushX
+  sphereB.y += pushY
+}
+
+function handleSpheresTouching(sphereA: Sphere, sphereB: Sphere) {
+  const directionFromAToB = unitDirectionFromAToB(sphereA, sphereB)
+
+  if (areMovingTowardEachOther(sphereA, sphereB, directionFromAToB)) {
+    sphereA.velocity = bounceVelocity(sphereA.velocity, directionFromAToB)
+    sphereB.velocity = bounceVelocity(sphereB.velocity, directionFromAToB)
+    normalizeSphereSpeed(sphereA)
+    normalizeSphereSpeed(sphereB)
+  }
+
+  pushSpheresApart(sphereA, sphereB, directionFromAToB)
+}
+
+function fixOverlappingSpheres(spheres: Sphere[]) {
+  for (let attempt = 0; attempt < PHYSICS.maxOverlapFixAttempts; attempt++) {
+    let fixedAnyOverlap = false
+
+    for (let i = 0; i < spheres.length; i++) {
+      for (let j = i + 1; j < spheres.length; j++) {
+        if (areSpheresOverlapping(spheres[i], spheres[j])) {
+          handleSpheresTouching(spheres[i], spheres[j])
+          fixedAnyOverlap = true
+        }
+      }
+    }
+
+    if (!fixedAnyOverlap) break
+  }
+}
+
+function bounceSphereOffLeftWall(sphere: Sphere) {
+  sphere.x = sphere.radius + PHYSICS.gapAfterContact
+  if (sphere.velocity.x < 0) sphere.velocity.x *= -1
+  normalizeSphereSpeed(sphere)
+}
+
+function bounceSphereOffRightWall(sphere: Sphere, canvasWidth: number) {
+  sphere.x = canvasWidth - sphere.radius - PHYSICS.gapAfterContact
+  if (sphere.velocity.x > 0) sphere.velocity.x *= -1
+  normalizeSphereSpeed(sphere)
+}
+
+function bounceSphereOffTopWall(sphere: Sphere) {
+  sphere.y = sphere.radius + PHYSICS.gapAfterContact
+  if (sphere.velocity.y < 0) sphere.velocity.y *= -1
+  normalizeSphereSpeed(sphere)
+}
+
+function bounceSphereOffBottomWall(sphere: Sphere, canvasHeight: number) {
+  sphere.y = canvasHeight - sphere.radius - PHYSICS.gapAfterContact
+  if (sphere.velocity.y > 0) sphere.velocity.y *= -1
+  normalizeSphereSpeed(sphere)
+}
+
+function handleSphereOutsideWall(sphere: Sphere, viewport: Viewport) {
+  const { width, height } = viewport
+
+  if (sphere.x - sphere.radius < 0) {
+    bounceSphereOffLeftWall(sphere)
+  } else if (sphere.x + sphere.radius > width) {
+    bounceSphereOffRightWall(sphere, width)
+  }
+
+  if (sphere.y - sphere.radius < 0) {
+    bounceSphereOffTopWall(sphere)
+  } else if (sphere.y + sphere.radius > height) {
+    bounceSphereOffBottomWall(sphere, height)
+  }
+}
+
+function fixSpheresOutsideWalls(spheres: Sphere[], viewport: Viewport) {
+  for (const sphere of spheres) {
+    handleSphereOutsideWall(sphere, viewport)
+  }
+}
+
+type CollisionEvent =
+  | { kind: 'none' }
+  | { kind: 'wall'; sphereIndex: number; time: number }
+  | { kind: 'sphere'; sphereAIndex: number; sphereBIndex: number; time: number }
+
+function findNextCollision(
+  spheres: Sphere[],
+  viewport: Viewport,
+  withinTime: number,
+): CollisionEvent {
+  let nextEvent: CollisionEvent = { kind: 'none' }
+  let nextTime = withinTime
+
+  for (let sphereIndex = 0; sphereIndex < spheres.length; sphereIndex++) {
+    const wallHitTime = timeUntilSphereHitsWall(
+      spheres[sphereIndex],
+      viewport,
+      nextTime,
+    )
+
+    if (wallHitTime !== null && wallHitTime < nextTime) {
+      nextTime = wallHitTime
+      nextEvent = { kind: 'wall', sphereIndex, time: wallHitTime }
+    }
+  }
+
+  for (let sphereAIndex = 0; sphereAIndex < spheres.length; sphereAIndex++) {
+    for (
+      let sphereBIndex = sphereAIndex + 1;
+      sphereBIndex < spheres.length;
+      sphereBIndex++
+    ) {
+      const touchTime = timeUntilSpheresTouch(
+        spheres[sphereAIndex],
+        spheres[sphereBIndex],
+        nextTime,
+      )
+
+      if (touchTime !== null && touchTime < nextTime) {
+        nextTime = touchTime
+        nextEvent = {
+          kind: 'sphere',
+          sphereAIndex,
+          sphereBIndex,
+          time: touchTime,
+        }
+      }
+    }
+  }
+
+  return nextEvent
+}
+
+function moveAllSpheres(spheres: Sphere[], deltaTimeSeconds: number) {
+  for (const sphere of spheres) {
+    sphere.moveBy(deltaTimeSeconds)
+  }
+}
+
+function respondToCollision(
+  event: CollisionEvent,
+  spheres: Sphere[],
+  viewport: Viewport,
+) {
+  if (event.kind === 'sphere') {
+    handleSpheresTouching(
+      spheres[event.sphereAIndex],
+      spheres[event.sphereBIndex],
+    )
+    fixOverlappingSpheres(spheres)
+    return
+  }
+
+  if (event.kind === 'wall') {
+    handleSphereOutsideWall(spheres[event.sphereIndex], viewport)
+  }
+}
+
+function simulateSpheres(
+  spheres: Sphere[],
+  viewport: Viewport,
+  deltaTimeSeconds: number,
+) {
+  fixOverlappingSpheres(spheres)
+  fixSpheresOutsideWalls(spheres, viewport)
+
+  let remainingFrameTime = deltaTimeSeconds
+
+  for (
+    let check = 0;
+    check < PHYSICS.maxCollisionChecksPerFrame &&
+    remainingFrameTime > PHYSICS.minCollisionTime;
+    check++
+  ) {
+    const nextCollision = findNextCollision(
+      spheres,
+      viewport,
+      remainingFrameTime,
+    )
+
+    if (nextCollision.kind === 'none') {
+      moveAllSpheres(spheres, remainingFrameTime)
+      fixSpheresOutsideWalls(spheres, viewport)
+      return
+    }
+
+    moveAllSpheres(spheres, nextCollision.time)
+    remainingFrameTime -= nextCollision.time
+
+    respondToCollision(nextCollision, spheres, viewport)
+    fixSpheresOutsideWalls(spheres, viewport)
+  }
+
+  if (remainingFrameTime > PHYSICS.minCollisionTime) {
+    moveAllSpheres(spheres, remainingFrameTime)
+    fixSpheresOutsideWalls(spheres, viewport)
+  }
 }
 
 class Sphere {
@@ -168,13 +567,15 @@ class Sphere {
   radius: number
   strokeColor: string
   velocity: Vec2
+  speed: number
 
-  constructor({ x, y, radius, strokeColor, velocity }: SphereConfig) {
+  constructor({ x, y, radius, strokeColor, velocity, speed }: SphereConfig) {
     this.x = x
     this.y = y
     this.radius = radius
     this.strokeColor = strokeColor
     this.velocity = velocity
+    this.speed = speed
   }
 
   draw(context: CanvasRenderingContext2D) {
@@ -187,31 +588,9 @@ class Sphere {
     context.restore()
   }
 
-  update(viewport: Viewport) {
-    this.bounceOffBounds(viewport)
-  }
-
-  bounceOffBounds(viewport: Viewport) {
-    const { width, height } = viewport
-
-    this.x += this.velocity.x
-    this.y += this.velocity.y
-
-    if (this.x - this.radius < 0) {
-      this.x = this.radius
-      this.velocity.x *= -1
-    } else if (this.x + this.radius > width) {
-      this.x = width - this.radius
-      this.velocity.x *= -1
-    }
-
-    if (this.y - this.radius < 0) {
-      this.y = this.radius
-      this.velocity.y *= -1
-    } else if (this.y + this.radius > height) {
-      this.y = height - this.radius
-      this.velocity.y *= -1
-    }
+  moveBy(deltaTimeSeconds: number) {
+    this.x += this.velocity.x * deltaTimeSeconds
+    this.y += this.velocity.y * deltaTimeSeconds
   }
 
   overlaps(other: CircleBounds) {
@@ -227,8 +606,14 @@ function createRandomSphereRadius(viewport: Viewport) {
   return minRadius + Math.floor(Math.random() * (maxRadius - minRadius))
 }
 
-function createRandomSphereVelocity(viewport: Viewport): Vec2 {
-  const speed = viewport.scaleToPixels(SPHERE.speed)
+function getSphereSpeedPixelsPerSecond(viewport: Viewport) {
+  return (
+    viewport.scaleToPixels(SPHERE.speed) *
+    SIMULATION.referenceFramesPerSecond
+  )
+}
+
+function createRandomSphereVelocity(speed: number): Vec2 {
   const angle = Math.random() * Math.PI * 2
   return {
     x: Math.cos(angle) * speed,
@@ -263,6 +648,7 @@ class Scene {
   static spawnSpheres(viewport: Viewport) {
     const { width, height } = viewport
     const spheres: Sphere[] = []
+    const speed = getSphereSpeedPixelsPerSecond(viewport)
 
     let spawnedCount = 0
     while (spawnedCount < SPHERE.count) {
@@ -279,7 +665,8 @@ class Scene {
           x,
           y,
           radius,
-          velocity: createRandomSphereVelocity(viewport),
+          speed,
+          velocity: createRandomSphereVelocity(speed),
           strokeColor: COLORS.sphereStroke,
         }),
       )
@@ -289,18 +676,8 @@ class Scene {
     return spheres
   }
 
-  processCollisions() {
-    for (let i = 0; i < this.spheres.length; i++) {
-      for (let j = i + 1; j < this.spheres.length; j++) {
-        // resolveSphereCollision(this.spheres[i], this.spheres[j])
-      }
-    }
-  }
-
-  update(viewport: Viewport) {
-    this.processCollisions()
-    this.spheres.forEach((sphere) => sphere.update(viewport))
-    this.processCollisions()
+  update(viewport: Viewport, deltaTimeSeconds: number) {
+    simulateSpheres(this.spheres, viewport, deltaTimeSeconds)
   }
 
   draw(context: CanvasRenderingContext2D) {
@@ -327,16 +704,26 @@ class Engine {
   }
 
   start() {
-    const renderFrame = () => {
-      this.renderer.clear()
-      this.renderer.fillBackground()
-      this.scene.update(this.viewport)
-      this.scene.draw(this.renderer.context)
+    let lastFrameTimeMs: number | null = null
 
+    const renderFrame = (frameTimeMs: number) => {
+      if (lastFrameTimeMs !== null) {
+        const deltaTimeSeconds = Math.min(
+          (frameTimeMs - lastFrameTimeMs) / 1000,
+          SIMULATION.maxDeltaTimeSeconds,
+        )
+
+        this.renderer.clear()
+        this.renderer.fillBackground()
+        this.scene.update(this.viewport, deltaTimeSeconds)
+        this.scene.draw(this.renderer.context)
+      }
+
+      lastFrameTimeMs = frameTimeMs
       requestAnimationFrame(renderFrame)
     }
 
-    renderFrame()
+    requestAnimationFrame(renderFrame)
   }
 }
 
