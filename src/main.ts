@@ -8,10 +8,10 @@ const COLORS = {
 } as const
 
 const SPHERE = {
-  maxRadius: 100,
+  maxRadius: 150,
   minRadius: 10,
-  speed: 0.25,
-  count: 50,
+  speed: 0.3,
+  count: 40,
 } as const
 
 const SIMULATION = {
@@ -20,7 +20,7 @@ const SIMULATION = {
 } as const
 
 const LAYOUT = {
-  canvasPadding: 48,
+  canvasPadding: -256,
 } as const
 
 const PHYSICS = {
