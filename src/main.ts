@@ -3,15 +3,15 @@
 const DESIGN_REFERENCE_SIZE = 800
 
 const COLORS = {
-  background: '#111111',
-  sphereStroke: '#ffffff',
+  background: 'transparent',
+  sphereStroke: '#000000',
 } as const
 
 const SPHERE = {
   maxRadius: 150,
   minRadius: 10,
   speed: 0.3,
-  count: 40,
+  count: 30,
 } as const
 
 const SIMULATION = {
@@ -582,9 +582,9 @@ class Sphere {
     context.save()
     context.translate(this.x, this.y)
     context.beginPath()
-    context.strokeStyle = this.strokeColor
+    context.fillStyle = this.strokeColor
     context.arc(0, 0, this.radius, 0, Math.PI * 2)
-    context.stroke()
+    context.fill()
     context.restore()
   }
 
@@ -691,9 +691,11 @@ class Engine {
   renderer: CanvasRenderer
   viewport: Viewport
   scene: Scene
+  globalAlpha: number = 1
 
-  constructor(canvasId = 'canvas') {
+  constructor(canvasId = 'canvas', globalAlpha = 1) {
     this.renderer = new CanvasRenderer(canvasId)
+    this.renderer.context.globalAlpha = globalAlpha
     this.viewport = new Viewport(this.renderer.width, this.renderer.height)
     this.scene = new Scene(this.viewport)
 
@@ -729,5 +731,9 @@ class Engine {
 
 // --- Bootstrap ---
 
-const engine = new Engine('canvas')
-engine.start()
+const engine1 = new Engine('canvas-1', 0.075)
+engine1.start()
+const engine2 = new Engine('canvas-2', 0.05)
+engine2.start()
+const engine3 = new Engine('canvas-3', 0.025)
+engine3.start()
