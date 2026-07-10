@@ -3,15 +3,7 @@
 const DESIGN_REFERENCE_SIZE = 800
 
 const COLORS = {
-  background: 'transparent',
-  sphereFill: '#000000',
-} as const
-
-const SPHERE = {
-  maxRadius: 250,
-  minRadius: 20,
-  speed: 0.3,
-  count: 15,
+  background: '#10131f'
 } as const
 
 const SIMULATION = {
@@ -38,7 +30,6 @@ type SphereConfig = {
   x: number
   y: number
   radius: number
-  fillColor: string
   velocity: Vec2
   speed: number
   mass: number
@@ -291,14 +282,6 @@ function pickMinimumTimeInWindow(
   return earliest
 }
 
-function pickEarliestTime(times: number[], withinTime: number) {
-  return pickMinimumTimeInWindow(times, withinTime, PHYSICS.minCollisionTime)
-}
-
-function pickEarliestWallHitTime(candidateTimes: Array<number | null>, withinTime: number) {
-  return pickMinimumTimeInWindow(candidateTimes, withinTime, 0)
-}
-
 // --- CCD: sphere–sphere first-touch time ---
 
 function solveEarliestTouchTime(
@@ -369,7 +352,11 @@ function solveEarliestTouchTime(
 
   const secondTouchTime = (-quadraticB + sqrtDiscriminant) / denominator
 
-  return pickEarliestTime([firstTouchTime, secondTouchTime], withinTime)
+  return pickMinimumTimeInWindow(
+    [firstTouchTime, secondTouchTime],
+    withinTime,
+    PHYSICS.minCollisionTime,
+  )
 }
 
 function timeUntilSpheresTouch(
@@ -438,7 +425,7 @@ function timeUntilSphereHitsWall(
 
   const walls = getWallTargetPositions(sphere, viewport)
 
-  return pickEarliestWallHitTime(
+  return pickMinimumTimeInWindow(
     [
       timeUntilPositionReachesTarget(sphere.x, walls.left, sphere.velocity.x),
       timeUntilPositionReachesTarget(sphere.x, walls.right, sphere.velocity.x),
@@ -446,6 +433,7 @@ function timeUntilSphereHitsWall(
       timeUntilPositionReachesTarget(sphere.y, walls.bottom, sphere.velocity.y),
     ],
     withinTime,
+    0,
   )
 }
 
@@ -517,55 +505,39 @@ function bounceSphereOffAxis(
   normalizeSphereSpeed(sphere)
 }
 
-function bounceSphereOffLeftWall(sphere: Sphere) {
-  bounceSphereOffAxis(
-    sphere,
-    'x',
-    sphere.radius + PHYSICS.gapAfterContact,
-    (velocity) => velocity < 0,
-  )
-}
-
-function bounceSphereOffRightWall(sphere: Sphere, canvasWidth: number) {
-  bounceSphereOffAxis(
-    sphere,
-    'x',
-    canvasWidth - sphere.radius - PHYSICS.gapAfterContact,
-    (velocity) => velocity > 0,
-  )
-}
-
-function bounceSphereOffTopWall(sphere: Sphere) {
-  bounceSphereOffAxis(
-    sphere,
-    'y',
-    sphere.radius + PHYSICS.gapAfterContact,
-    (velocity) => velocity < 0,
-  )
-}
-
-function bounceSphereOffBottomWall(sphere: Sphere, canvasHeight: number) {
-  bounceSphereOffAxis(
-    sphere,
-    'y',
-    canvasHeight - sphere.radius - PHYSICS.gapAfterContact,
-    (velocity) => velocity > 0,
-  )
-}
-
 function handleSphereOutsideWall(sphere: Sphere, viewport: Viewport) {
   const { width, height } = viewport
 
   if (sphere.x - sphere.radius < 0) {
-    bounceSphereOffLeftWall(sphere)
+    bounceSphereOffAxis(
+      sphere,
+      'x',
+      sphere.radius + PHYSICS.gapAfterContact,
+      (velocity) => velocity < 0,
+    )
   } else if (sphere.x + sphere.radius > width) {
-    bounceSphereOffRightWall(sphere, width)
+    bounceSphereOffAxis(
+      sphere,
+      'x',
+      width - sphere.radius - PHYSICS.gapAfterContact,
+      (velocity) => velocity > 0,
+    )
   }
 
   if (sphere.y - sphere.radius < 0) {
-    bounceSphereOffTopWall(sphere)
+    bounceSphereOffAxis(
+      sphere,
+      'y',
+      sphere.radius + PHYSICS.gapAfterContact,
+      (velocity) => velocity < 0,
+    )
   } else if (sphere.y + sphere.radius > height) {
-    bounceSphereOffBottomWall(sphere, height)
+    bounceSphereOffAxis(
+      sphere,
+      'y',
+      height - sphere.radius - PHYSICS.gapAfterContact,
+      (velocity) => velocity > 0,
+    )
   }
 }
 
@@ -729,38 +701,73 @@ class Sphere {
   x: number
   y: number
   radius: number
-  fillColor: string
   velocity: Vec2
   speed: number
   mass: number
 
-  constructor({ x, y, radius, fillColor, velocity, speed, mass }: SphereConfig) {
+  constructor({ x, y, radius, velocity, speed, mass }: SphereConfig) {
     this.x = x
     this.y = y
     this.radius = radius
-    this.fillColor = fillColor
     this.velocity = velocity
     this.speed = speed
     this.mass = mass
   }
 
   draw(context: CanvasRenderingContext2D) {
+    const radius = this.radius
+  
     context.save()
     context.translate(this.x, this.y)
+  
+    context.globalCompositeOperation = 'overlay'
+  
+    // Main transparent bubble body.
+    const bodyGradient = context.createRadialGradient(
+      -radius * 0.35,
+      -radius * 0.35,
+      radius * 0.05,
+      0,
+      0,
+      radius,
+    )
+
+    bodyGradient.addColorStop(0.35, 'transparent')
+    bodyGradient.addColorStop(0.75, 'rgba(255, 255, 255, 0.1)')
+    bodyGradient.addColorStop(0.99, 'rgba(255, 255, 255, 0.75)')
+    bodyGradient.addColorStop(1, 'rgba(255, 255, 255, 1)')
+  
     context.beginPath()
-    context.fillStyle = this.fillColor
-    context.arc(0, 0, this.radius, 0, Math.PI * 2)
+    context.fillStyle = bodyGradient
+    context.arc(0, 0, radius, 0, Math.PI * 2)
     context.fill()
+  
+    // Main white highlight.
+    context.beginPath()
+    context.fillStyle = 'rgba(255, 255, 255, 1)'
+    context.ellipse(
+      -radius * 0.35,
+      -radius * 0.4,
+      radius * 0.12,
+      radius * 0.08,
+      -Math.PI * 0.25,
+      0,
+      Math.PI * 2,
+    )
+    context.fill()
+  
+    // Small secondary highlight.
+    context.beginPath()
+    context.fillStyle = 'rgba(255, 255, 255, 1)'
+    context.arc(radius * 0.35, radius * 0.25, radius * 0.05, 0, Math.PI * 2)
+    context.fill()
+  
     context.restore()
   }
 
   moveBy(deltaTimeSeconds: number) {
     this.x += this.velocity.x * deltaTimeSeconds
     this.y += this.velocity.y * deltaTimeSeconds
-  }
-
-  overlaps(other: CircleBounds) {
-    return areCirclesOverlapping(this, other)
   }
 }
 
@@ -782,15 +789,12 @@ function randomGaussian(mean = 0, standardDeviation = 1) {
   return mean + standardDeviation * z
 }
 
-function createRandomSphereRadius(viewport: Viewport) {
-  const minRadius = viewport.scaleToPixels(SPHERE.minRadius)
-  const maxRadius = viewport.scaleToPixels(SPHERE.maxRadius)
-
+function createRandomSphereRadius(minRadius: number, maxRadius: number) {
   // μ at the midpoint, σ spanning roughly ±3σ across [min, max] (68–99.7 rule)
   const mean = (minRadius + maxRadius) / 2
   const standardDeviation = (maxRadius - minRadius) / 6
 
-  let radius
+  let radius: number
 
   do {
     radius = randomGaussian(mean, standardDeviation)
@@ -799,9 +803,9 @@ function createRandomSphereRadius(viewport: Viewport) {
   return radius
 }
 
-function getSphereSpeedPixelsPerSecond(viewport: Viewport) {
-  // SPHERE.speed is defined per reference frame; scale to pixels and to real seconds.
-  return viewport.scaleToPixels(SPHERE.speed) * SIMULATION.referenceFramesPerSecond
+function getSphereSpeedPixelsPerSecond(viewport: Viewport, speed: number) {
+  // Layer speed is defined per reference frame; scale to pixels and to real seconds.
+  return viewport.scaleToPixels(speed) * SIMULATION.referenceFramesPerSecond
 }
 
 function createRandomSphereVelocity(speed: number): Vec2 {
@@ -823,7 +827,7 @@ function canPlaceSphereAt(
   const { width, height } = viewport
 
   return (
-    !spheres.some((sphere) => sphere.overlaps({ x, y, radius })) &&
+    !spheres.some((sphere) => areCirclesOverlapping(sphere, { x, y, radius })) &&
     x - radius >= 0 &&
     y - radius >= 0 &&
     x + radius <= width &&
@@ -835,11 +839,13 @@ function tryCreateRandomSphere(
   viewport: Viewport,
   existingSpheres: Sphere[],
   speed: number,
+  minRadius: number,
+  maxRadius: number,
 ): Sphere | null {
   const { width, height } = viewport
   const x = Math.floor(Math.random() * width)
   const y = Math.floor(Math.random() * height)
-  const radius = createRandomSphereRadius(viewport)
+  const radius = createRandomSphereRadius(minRadius, maxRadius)
 
   if (!canPlaceSphereAt(x, y, radius, viewport, existingSpheres)) {
     return null
@@ -851,26 +857,42 @@ function tryCreateRandomSphere(
     radius,
     speed,
     velocity: createRandomSphereVelocity(speed),
+    // All spheres have equal mass by design
     mass: 1,
-    fillColor: COLORS.sphereFill,
   })
 }
 
-class Scene {
+type SphereLayerConfig = {
+  count: number
+  minRadius: number
+  maxRadius: number
+  speed: number
+  alpha: number
+}
+
+class SphereLayer {
   spheres: Sphere[]
+  config: SphereLayerConfig
 
-  constructor(viewport: Viewport) {
-    this.spheres = Scene.spawnSpheres(viewport)
+  constructor(viewport: Viewport, config: SphereLayerConfig) {
+    this.config = config
+    this.spheres = SphereLayer.spawnSpheres(viewport, config)
   }
-
-  static spawnSpheres(viewport: Viewport) {
+  
+  static spawnSpheres(viewport: Viewport, config: SphereLayerConfig) {
     const spheres: Sphere[] = []
-    const speed = getSphereSpeedPixelsPerSecond(viewport)
+    const speed = getSphereSpeedPixelsPerSecond(viewport, config.speed)
 
     let spawnedCount = 0
 
-    while (spawnedCount < SPHERE.count) {
-      const sphere = tryCreateRandomSphere(viewport, spheres, speed)
+    while (spawnedCount < config.count) {
+      const sphere = tryCreateRandomSphere(
+        viewport, 
+        spheres, 
+        speed, 
+        config.minRadius, 
+        config.maxRadius
+      )
 
       if (sphere === null) {
         continue
@@ -880,8 +902,6 @@ class Scene {
       spawnedCount++
     }
 
-    console.log(spheres.map((sphere) => sphere.radius / viewport.scale).sort((a, b) => a - b))
-
     return spheres
   }
 
@@ -890,7 +910,56 @@ class Scene {
   }
 
   draw(context: CanvasRenderingContext2D) {
-    this.spheres.forEach((sphere) => sphere.draw(context))
+    context.save()
+    context.globalAlpha = this.config.alpha
+
+    for (const sphere of this.spheres) {
+      sphere.draw(context)
+    }
+
+    context.restore()
+  }
+}
+
+class Scene {
+  layers: SphereLayer[]
+
+  constructor(viewport: Viewport) {
+    this.layers = [
+      new SphereLayer(viewport, {
+        count: 16,
+        minRadius: 20,
+        maxRadius: 150,
+        speed: 0.45,
+        alpha: 1,
+      }),
+      new SphereLayer(viewport, {
+        count: 12,
+        minRadius: 50,
+        maxRadius: 200,
+        speed: 0.3,
+        alpha: 0.45,
+      }),
+      new SphereLayer(viewport, {
+        count: 8,
+        minRadius: 100,
+        maxRadius: 250,
+        speed: 0.15,
+        alpha: 0.15,
+      }),
+    ]
+  }
+
+  update(viewport: Viewport, deltaTimeSeconds: number) {
+    for (const layer of this.layers) {
+      layer.update(viewport, deltaTimeSeconds)
+    }
+  }
+
+  draw(context: CanvasRenderingContext2D) {
+    for (const layer of this.layers) {
+      layer.draw(context)
+    }
   }
 }
 
@@ -901,9 +970,8 @@ class Engine {
   viewport: Viewport
   scene: Scene
 
-  constructor(canvasId = 'canvas', globalAlpha = 1) {
+  constructor(canvasId = 'canvas') {
     this.renderer = new CanvasRenderer(canvasId)
-    this.renderer.context.globalAlpha = globalAlpha
     this.viewport = new Viewport(this.renderer.width, this.renderer.height)
     this.scene = new Scene(this.viewport)
 
@@ -939,5 +1007,5 @@ class Engine {
 
 // --- Bootstrap ---
 
-const engine = new Engine('canvas', 1)
+const engine = new Engine('canvas')
 engine.start()
