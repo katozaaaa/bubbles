@@ -3,7 +3,7 @@
 const DESIGN_REFERENCE_SIZE = 800
 
 const COLORS = {
-  background: '#10131f'
+  background: '#10131f',
 } as const
 
 const SIMULATION = {
@@ -716,12 +716,12 @@ class Sphere {
 
   draw(context: CanvasRenderingContext2D) {
     const radius = this.radius
-  
+
     context.save()
     context.translate(this.x, this.y)
-  
+
     context.globalCompositeOperation = 'overlay'
-  
+
     // Main transparent bubble body.
     const bodyGradient = context.createRadialGradient(
       -radius * 0.35,
@@ -736,12 +736,12 @@ class Sphere {
     bodyGradient.addColorStop(0.75, 'rgba(255, 255, 255, 0.1)')
     bodyGradient.addColorStop(0.99, 'rgba(255, 255, 255, 0.75)')
     bodyGradient.addColorStop(1, 'rgba(255, 255, 255, 1)')
-  
+
     context.beginPath()
     context.fillStyle = bodyGradient
     context.arc(0, 0, radius, 0, Math.PI * 2)
     context.fill()
-  
+
     // Main white highlight.
     context.beginPath()
     context.fillStyle = 'rgba(255, 255, 255, 1)'
@@ -755,13 +755,13 @@ class Sphere {
       Math.PI * 2,
     )
     context.fill()
-  
+
     // Small secondary highlight.
     context.beginPath()
     context.fillStyle = 'rgba(255, 255, 255, 1)'
     context.arc(radius * 0.35, radius * 0.25, radius * 0.05, 0, Math.PI * 2)
     context.fill()
-  
+
     context.restore()
   }
 
@@ -878,7 +878,7 @@ class SphereLayer {
     this.config = config
     this.spheres = SphereLayer.spawnSpheres(viewport, config)
   }
-  
+
   static spawnSpheres(viewport: Viewport, config: SphereLayerConfig) {
     const spheres: Sphere[] = []
     const speed = getSphereSpeedPixelsPerSecond(viewport, config.speed)
@@ -887,11 +887,11 @@ class SphereLayer {
 
     while (spawnedCount < config.count) {
       const sphere = tryCreateRandomSphere(
-        viewport, 
-        spheres, 
-        speed, 
-        config.minRadius, 
-        config.maxRadius
+        viewport,
+        spheres,
+        speed,
+        config.minRadius,
+        config.maxRadius,
       )
 
       if (sphere === null) {
